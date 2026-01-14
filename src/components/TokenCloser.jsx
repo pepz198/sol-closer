@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react"; // 1. Pastikan useEffect diimpor
+import { useState, useCallback, useEffect } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { Transaction, PublicKey } from "@solana/web3.js";
 import {
@@ -18,37 +18,68 @@ const TokenCleaner = () => {
   const { connection } = useConnection();
   const { publicKey, sendTransaction } = useWallet();
 
+  // Main state
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [closingAll, setClosingAll] = useState(false);
   const [status, setStatus] = useState("");
   const [estimatedSol, setEstimatedSol] = useState(0);
   const [search, setSearch] = useState("");
-  
-  // State Alert
-  const [alert, setAlert] = useState(null);
 
-  // ✅ HELPER: Fungsi Alert
-  const showAlert = (message, type = "success", signature = null) => {
-    setAlert({ message, type, signature });
-    if (type !== "loading") {
-      setTimeout(() => {
-        setAlert(null);
-      }, 10000);
-    }
+  // Alerts stack
+  const [alerts, setAlerts] = useState([]);
+
+  // =========================
+  // 🔔 ALERT HELPERS
+  // =========================
+  const removeAlert = (id) => {
+    setAlerts((prev) => prev.filter((a) => a.id !== id));
   };
 
-  // ✅ HELPER: Link Solscan
+  const showAlert = (message, type = "success", signature = null) => {
+    const id = Date.now() + Math.random();
+    const newAlert = { id, message, type, signature };
+
+    setAlerts((prev) => [...prev, newAlert]);
+
+    if (type !== "loading") {
+      setTimeout(() => removeAlert(id), 5000);
+    }
+    return id;
+  };
+
+  // Always: remove loading toast first, then show next toast (avoid “double toast” feel)
+  const replaceLoadingWith = (loadingId, next) => {
+    if (loadingId) removeAlert(loadingId);
+    setTimeout(() => {
+      if (next) showAlert(next.message, next.type, next.signature ?? null);
+    }, 0);
+  };
+
   const getExplorerLink = (sig) => {
     const isDevnet = connection.rpcEndpoint.includes("devnet");
     return `https://solscan.io/tx/${sig}${isDevnet ? "?cluster=devnet" : ""}`;
+  };
+
+  const isUserReject = (err) => {
+    const code = err?.code;
+    const msg = (err?.message || "").toLowerCase();
+    return (
+      code === 4001 ||
+      msg.includes("user rejected") ||
+      msg.includes("user denied") ||
+      msg.includes("user canceled") ||
+      msg.includes("user cancelled") ||
+      msg.includes("rejected the request") ||
+      msg.includes("0x0")
+    );
   };
 
   // =========================
   // 🔍 SCAN TOKEN ACCOUNTS
   // =========================
   const scanAccounts = useCallback(async () => {
-    if (!publicKey) return; // Jika tidak ada wallet, stop
+    if (!publicKey) return;
 
     setLoading(true);
     setStatus("🔍 Scanning token accounts...");
@@ -66,7 +97,7 @@ const TokenCleaner = () => {
           return {
             pubkey: a.pubkey,
             mint: new PublicKey(info.mint),
-            amount: info.tokenAmount.amount,
+            amount: info.tokenAmount.amount, // string
             uiAmount: info.tokenAmount.uiAmount || 0,
             decimals: info.tokenAmount.decimals,
             programId,
@@ -94,15 +125,9 @@ const TokenCleaner = () => {
     }
   }, [publicKey, connection]);
 
-  // ============================================
-  // ✅ NEW: AUTO SCAN SAAT WALLET CONNECT
-  // ============================================
   useEffect(() => {
-    if (publicKey) {
-      scanAccounts();
-    }
-  }, [publicKey, scanAccounts]); 
-  // Effect ini akan jalan setiap kali 'publicKey' berubah (misal: user baru connect wallet)
+    if (publicKey) scanAccounts();
+  }, [publicKey, scanAccounts]);
 
   // =========================
   // 🔥 BURN TOKEN
@@ -111,14 +136,13 @@ const TokenCleaner = () => {
     if (!publicKey || uiAmountToBurn <= 0) return;
     if (uiAmountToBurn > acc.uiAmount) return;
 
+    let loadingId = null;
+
     try {
       setStatus("🔥 Burning token...");
-      showAlert("Burning token...", "loading");
+      loadingId = showAlert("Burning token...", "loading");
 
-      const rawAmount = Math.floor(
-        uiAmountToBurn * Math.pow(10, acc.decimals)
-      );
-
+      const rawAmount = Math.floor(uiAmountToBurn * Math.pow(10, acc.decimals));
       const tx = new Transaction();
 
       if (acc.programId.equals(TOKEN_2022_PROGRAM_ID)) {
@@ -134,26 +158,31 @@ const TokenCleaner = () => {
           )
         );
       } else {
-        tx.add(
-          createBurnInstruction(
-            acc.pubkey,
-            acc.mint,
-            publicKey,
-            rawAmount
-          )
-        );
+        tx.add(createBurnInstruction(acc.pubkey, acc.mint, publicKey, rawAmount));
       }
 
       const sig = await sendTransaction(tx, connection);
       await connection.confirmTransaction(sig, "confirmed");
 
-      setStatus("🔥 Burn success");
-      showAlert("🔥 Burn successful!", "success", sig);
+      replaceLoadingWith(loadingId, {
+        type: "success",
+        message: "Burn successful!",
+        signature: sig,
+      });
+
+      setStatus("✅ Burn success");
       scanAccounts();
     } catch (e) {
       console.error(e);
+
+      if (isUserReject(e)) {
+        setStatus("⚠️ Transaction cancelled");
+        replaceLoadingWith(loadingId, { type: "error", message: "Transaction cancelled" });
+        return;
+      }
+
       setStatus("❌ Burn failed");
-      showAlert("Burn failed!", "error");
+      replaceLoadingWith(loadingId, { type: "error", message: "Burn failed!" });
     }
   };
 
@@ -163,9 +192,11 @@ const TokenCleaner = () => {
   const closeSingleAccount = async (acc) => {
     if (!publicKey) return;
 
+    let loadingId = null;
+
     try {
       setStatus("Closing account...");
-      showAlert("Closing account...", "loading");
+      loadingId = showAlert("Closing account...", "loading");
 
       const tx = new Transaction().add(
         createCloseAccountInstruction(
@@ -180,28 +211,41 @@ const TokenCleaner = () => {
       const sig = await sendTransaction(tx, connection);
       await connection.confirmTransaction(sig, "confirmed");
 
+      replaceLoadingWith(loadingId, {
+        type: "success",
+        message: "Account closed successfully!",
+        signature: sig,
+      });
+
       setStatus("✅ Account closed");
-      showAlert("✅ Account closed successfully!", "success", sig);
       scanAccounts();
     } catch (e) {
       console.error(e);
+
+      if (isUserReject(e)) {
+        setStatus("⚠️ Transaction cancelled");
+        replaceLoadingWith(loadingId, { type: "error", message: "Transaction cancelled" });
+        return;
+      }
+
       setStatus("❌ Close failed");
-      showAlert("Failed to close account", "error");
+      replaceLoadingWith(loadingId, { type: "error", message: "Failed to close account" });
     }
   };
 
   // =========================
-  // 🔥 CLOSE ALL EMPTY (UPDATED)
+  // 🔥 CLOSE ALL EMPTY (BATCH)
   // =========================
   const closeAllEmptyAccounts = async () => {
     const empty = accounts.filter((a) => a.amount === "0");
     if (!empty.length) return;
 
-    let lastSignature = null; // 1. Variabel untuk menyimpan signature terakhir
+    let lastSignature = null;
+    let loadingId = null;
 
     try {
       setClosingAll(true);
-      showAlert(`Closing ${empty.length} accounts...`, "loading");
+      loadingId = showAlert(`Closing ${empty.length} accounts...`, "loading");
 
       for (let i = 0; i < empty.length; i += BATCH_SIZE) {
         const batch = empty.slice(i, i + BATCH_SIZE);
@@ -221,32 +265,40 @@ const TokenCleaner = () => {
 
         const sig = await sendTransaction(tx, connection);
         await connection.confirmTransaction(sig, "confirmed");
-
-        lastSignature = sig; // 2. Simpan signature
+        lastSignature = sig;
 
         const closedCount = Math.min(i + BATCH_SIZE, empty.length);
-        
-        // Update status teks
         setStatus(`🔥 Closed ${closedCount} / ${empty.length}`);
 
-        // 3. Tampilkan alert per batch DENGAN signature (agar muncul link)
-        showAlert(`✅ Batch closed (${closedCount}/${empty.length})`, "success", sig);
+        // per-batch toast (stacking)
+        showAlert(`Batch closed (${closedCount}/${empty.length})`, "success", sig);
       }
 
-      // 4. Pesan sukses terakhir juga menggunakan signature terakhir
-      showAlert("All empty accounts closed!", "success", lastSignature);
+      replaceLoadingWith(loadingId, {
+        type: "success",
+        message: "All empty accounts closed!",
+        signature: lastSignature,
+      });
+
       scanAccounts();
     } catch (e) {
       console.error(e);
+
+      if (isUserReject(e)) {
+        setStatus("⚠️ Transaction cancelled");
+        replaceLoadingWith(loadingId, { type: "error", message: "Transaction cancelled" });
+        return;
+      }
+
       setStatus("❌ Close failed");
-      showAlert("Failed to close all accounts", "error");
+      replaceLoadingWith(loadingId, { type: "error", message: "Failed to close all accounts" });
     } finally {
       setClosingAll(false);
     }
   };
 
   // =========================
-  // 🔍 SEARCH FILTER
+  // 🔍 FILTER
   // =========================
   const filteredAccounts = accounts.filter((acc) => {
     if (!search.trim()) return true;
@@ -258,79 +310,70 @@ const TokenCleaner = () => {
   });
 
   if (!publicKey) {
-    return (
-      <div className="py-10 text-center text-gray-400">
-        🔐 Connect wallet
-      </div>
-    );
+    return <div className="py-10 text-center text-gray-400">🔐 Connect wallet to start</div>;
   }
 
   return (
-    <div className="space-y-6 text-black">
-      
-      {/* ALERT TOAST */}
-      {alert && (
-        <div className="fixed bottom-0 left-5 z-50 animate-fade-in-up">
+    <div className="space-y-6 text-black relative">
+      {/* ALERTS (STACKING) */}
+      <div className="fixed bottom-0 right-5 z-50 flex flex-col gap-2 pointer-events-none pb-5">
+        {alerts.map((alert) => (
           <div
+            key={alert.id}
             className={`
+              pointer-events-auto
               px-4 py-3 rounded-lg shadow-xl text-sm font-medium
-              flex items-center gap-3
-              transition-all duration-300 transform translate-y-0
+              flex items-center justify-between gap-4 min-w-[300px]
+              animate-fade-in-up transition-all duration-300
               ${alert.type === "success" && "bg-green-600 text-white"}
               ${alert.type === "error" && "bg-red-600 text-white"}
+              ${alert.type === "warning" && "bg-orange-500 text-white"}
               ${alert.type === "loading" && "bg-black text-white"}
             `}
           >
             <div className="flex items-center gap-2">
-              {alert.type === "loading" && "⏳"}
-              {alert.type === "success" && "✅"}
-              {alert.type === "error" && "❌"}
+              {alert.type === "loading" }
+              {alert.type === "success" }
+              {alert.type === "error" }
+               {alert.type === "warning"}
               <span>{alert.message}</span>
             </div>
 
-            {alert.signature && (
-              <a
-                href={getExplorerLink(alert.signature)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="
-                  bg-white/20 hover:bg-white/30
-                  px-2 py-1 rounded text-xs font-bold
-                  uppercase tracking-wider transition
-                "
+            <div className="flex items-center gap-2">
+              {alert.signature && (
+                <a
+                  href={getExplorerLink(alert.signature)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="bg-white/20 hover:bg-white/30 px-2 py-1 rounded text-xs font-bold uppercase whitespace-nowrap transition"
+                >
+                  ↗
+                </a>
+              )}
+              <button
+                onClick={() => removeAlert(alert.id)}
+                className="w-6 h-6 flex items-center justify-center rounded-full text-white/80 hover:bg-white/20 transition"
               >
-                View TX ↗
-              </a>
-            )}
-
-            <button
-              onClick={() => setAlert(null)}
-              className="ml-1 w-6 h-6 flex items-center justify-center rounded-full text-white/80 hover:text-white hover:bg-white/20 transition"
-            >
-              ✕
-            </button>
+                ✕
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        ))}
+      </div>
 
       {/* HEADER */}
       <div className="flex flex-wrap justify-between items-center gap-3">
         <h2 className="text-xl font-bold">SPL Token Cleaner</h2>
 
         <div className="flex items-center gap-2">
+          {/* Search */}
           <div className="relative w-[280px]">
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search token / mint / account"
-              className="
-                w-full
-                px-3 pr-8 py-2
-                border border-gray-300 rounded-lg
-                text-sm
-                focus:outline-none focus:ring-2 focus:ring-black
-              "
+              placeholder="Search token / mint..."
+              className="w-full px-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-black"
             />
             {search && (
               <button
@@ -343,18 +386,31 @@ const TokenCleaner = () => {
             )}
           </div>
 
+          {/* Scan */}
           <button
             onClick={scanAccounts}
             disabled={loading}
-            className="px-4 py-2 rounded-xl bg-indigo-600 text-white cursor-pointer hover:bg-indigo-700 transition"
+            className={`
+              min-w-[100px] px-4 py-2 h-[40px] rounded-xl text-white font-medium
+              flex items-center justify-center gap-2 transition-all
+              ${loading ? "bg-indigo-400 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700 shadow-lg hover:shadow-xl"}
+            `}
           >
-            {loading ? "Scanning..." : "Scan"}
+            {loading ? (
+              <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            ) : (
+              "Refresh"
+            )}
           </button>
 
+          {/* Close Empty */}
           <button
             onClick={closeAllEmptyAccounts}
             disabled={closingAll}
-            className="px-4 py-2 rounded-xl bg-red-600 text-white cursor-pointer hover:bg-red-700 transition"
+            className="px-4 py-2 h-[40px] rounded-xl bg-red-600 text-white hover:bg-red-700 disabled:bg-red-400 disabled:cursor-not-allowed transition"
           >
             Close Empty
           </button>
@@ -370,51 +426,109 @@ const TokenCleaner = () => {
       {status && <div className="text-sm text-gray-600">{status}</div>}
 
       {/* TABLE */}
-      <div className="border rounded-2xl overflow-hidden bg-white shadow">
-        <table className="w-full text-[13px]">
-          <thead className="bg-gray-50 text-gray-600">
+      <div className="border border-gray-200 rounded-2xl overflow-hidden bg-white shadow-sm ring-1 ring-black/5">
+        <table className="min-w-full table-fixed divide-y divide-gray-200">
+          <thead className="bg-gray-50">
             <tr>
-              <th className="px-4 py-3 text-left">Token Account</th>
-              <th className="px-4 py-3 text-left">Mint</th>
-              <th className="px-4 py-3 text-center">Balance</th>
-              <th className="px-4 py-3 text-center">Action</th>
+              <th className="w-[40%] px-6 py-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                Mint Address
+              </th>
+              <th className="w-[20%] px-6 py-4 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                Balance
+              </th>
+              <th className="w-[40%] px-6 py-4 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                Actions
+              </th>
             </tr>
           </thead>
-          <tbody>
-            {filteredAccounts.map((acc) => (
-              <tr key={acc.pubkey.toString()} className="border-t hover:bg-gray-50">
-                <td className="px-4 py-3 font-mono truncate min-w-[180px] max-w-[200px]" title={acc.pubkey.toString()}>
-                  {acc.pubkey.toString().slice(0, 8)}...{acc.pubkey.toString().slice(-8)}
-                </td>
-                <td className="px-4 py-3 font-mono truncate min-w-[180px] max-w-[200px]" title={acc.mint.toString()}>
-                  {acc.mint.toString().slice(0, 8)}...{acc.mint.toString().slice(-8)}
-                </td>
-                <td className="px-4 py-3 text-center min-w-[120px]">
-                  {acc.uiAmount}
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex justify-end gap-2 w-full">
-                    {acc.uiAmount > 0 && (
-                      <BurnInput acc={acc} onBurn={burnToken} />
-                    )}
 
-                    <button
-                      onClick={() => closeSingleAccount(acc)}
-                      disabled={acc.uiAmount > 0}
-                      className="px-2 py-1 cursor-pointer text-[10px] rounded-md bg-red-600 text-white hover:bg-red-700 disabled:bg-gray-400 transition"
+                   <tbody className="divide-y divide-gray-100 bg-white">
+            {loading ? (
+              // 🔄 SINGLE CENTERED SPINNER
+              <tr>
+                <td colSpan="3" className="px-6 py-16">
+                  <div className="flex flex-col items-center justify-center gap-3">
+                    <svg 
+                      className="animate-spin h-10 w-10 text-indigo-600" 
+                      xmlns="http://www.w3.org/2000/svg" 
+                      fill="none" 
+                      viewBox="0 0 24 24"
                     >
-                      Close
-                    </button>
+                      <circle 
+                        className="opacity-25" 
+                        cx="12" 
+                        cy="12" 
+                        r="10" 
+                        stroke="currentColor" 
+                        strokeWidth="4"
+                      ></circle>
+                      <path 
+                        className="opacity-75" 
+                        fill="currentColor" 
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    <p className="text-sm text-gray-500 font-medium">Loading tokens...</p>
                   </div>
                 </td>
               </tr>
-            ))}
+            ) : (
+
+              filteredAccounts.map((acc) => (
+                <tr key={acc.pubkey.toString()} className="group transition-colors duration-200 hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center gap-1">
+                      <span className="font-mono text-sm text-gray-700 font-medium truncate " title={acc.mint.toString()}>
+                        {acc.mint.toString()}
+                      </span>
+                      <CopyButton text={acc.mint.toString()} />
+                    </div>
+                  </td>
+
+                  <td className="px-6 py-4 whitespace-nowrap text-center">
+                    <span
+                      className={`
+                        inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                        ${acc.uiAmount > 0 ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-600"}
+                      `}
+                    >
+                      {acc.uiAmount}
+                    </span>
+                  </td>
+
+                  <td className="px-6 py-4 whitespace-nowrap text-right">
+                    <div className="flex justify-end items-center gap-3 w-full">
+                      {acc.uiAmount > 0 && (
+                        <div className="scale-95 origin-right">
+                          <BurnInput acc={acc} onBurn={burnToken} />
+                        </div>
+                      )}
+
+                      <button
+                        onClick={() => closeSingleAccount(acc)}
+                        disabled={acc.uiAmount > 0}
+                        className={`
+                          px-3 py-1.5 rounded-lg text-xs font-semibold shadow-sm border transition-all
+                          ${acc.uiAmount > 0
+                            ? "bg-gray-50 text-gray-300 border-gray-100 cursor-not-allowed"
+                            : "bg-white text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300 active:scale-95"}
+                        `}
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
 
         {!filteredAccounts.length && !loading && (
-          <div className="p-6 text-center text-gray-400">
-            No matching token
+          <div className="px-6 py-12 text-center">
+            <div className="mx-auto h-12 w-12 text-gray-300 mb-3 text-4xl">🍃</div>
+            <h3 className="mt-2 text-sm font-medium text-gray-900">No tokens found</h3>
+            <p className="mt-1 text-sm text-gray-500">Your wallet is clean or no matching results.</p>
           </div>
         )}
       </div>
@@ -424,17 +538,16 @@ const TokenCleaner = () => {
 
 export default TokenCleaner;
 
-// BurnInput component remains the same...
+// =========================
+// 🔥 BurnInput
+// =========================
 const BurnInput = ({ acc, onBurn }) => {
   const [value, setValue] = useState("");
   const [selected, setSelected] = useState(null);
 
   const setPercent = (p) => {
     const amount =
-      p === 100
-        ? acc.uiAmount
-        : Number(((acc.uiAmount * p) / 100).toFixed(acc.decimals));
-
+      p === 100 ? acc.uiAmount : Number(((acc.uiAmount * p) / 100).toFixed(acc.decimals));
     setValue(amount.toString());
     setSelected(p);
   };
@@ -451,7 +564,7 @@ const BurnInput = ({ acc, onBurn }) => {
           setSelected(null);
         }}
         placeholder="Amount"
-        className="w-[80px] px-2 py-1 border rounded text-left focus:outline-none focus:border-black"
+        className="w-[90px] px-2 py-1.5 border rounded text-left focus:outline-none focus:border-black"
       />
 
       <div className="flex gap-1">
@@ -459,28 +572,76 @@ const BurnInput = ({ acc, onBurn }) => {
           <button
             key={p}
             onClick={() => setPercent(p)}
-            className={`px-2 h-[26px] rounded-full border transition ${
-              selected === p
-                ? "bg-black text-white"
-                : "bg-white text-black hover:bg-gray-100"
+            type="button"
+            className={`px-1.5 h-[28px] min-w-[34px] rounded border transition ${
+              selected === p ? "bg-black text-white" : "bg-white text-black hover:bg-gray-100"
             }`}
           >
-            {p === 100 ? "MAX" : `${p}%`}
+            {p === 100 ? "Max" : `${p}%`}
           </button>
         ))}
       </div>
 
       <button
+        type="button"
         disabled={!value || Number(value) <= 0}
         onClick={() => {
           onBurn(acc, Number(value));
           setValue("");
           setSelected(null);
         }}
-        className="px-3 h-[28px] rounded-md bg-black text-white disabled:bg-gray-400 cursor-pointer hover:bg-gray-800 transition"
+        className="px-3 h-[28px] rounded bg-black text-white disabled:bg-gray-400 hover:bg-gray-800 transition"
       >
         Burn
       </button>
     </div>
+  );
+};
+
+// =========================
+// 📋 CopyButton
+// =========================
+const CopyButton = ({ text }) => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch (err) {
+      console.error("Failed to copy:", err);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      title="Copy Mint Address"
+      className={`
+        p-1 rounded-md transition-all duration-200 flex-shrink-0 cursor-pointer
+        ${copied ? "bg-green-100 text-green-600" : "text-gray-400 hover:bg-gray-100 hover:text-gray-800"}
+      `}
+    >
+      {copied ? (
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+          <path
+            fillRule="evenodd"
+            d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+            clipRule="evenodd"
+          />
+        </svg>
+      ) : (
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+          />
+        </svg>
+      )}
+    </button>
   );
 };
