@@ -2,12 +2,13 @@
 
 import { useState, useCallback } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { Transaction } from "@solana/web3.js";
+import { Transaction, PublicKey } from "@solana/web3.js";
 import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   createCloseAccountInstruction,
   createBurnInstruction,
+  createBurnCheckedInstruction,
 } from "@solana/spl-token";
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
@@ -21,12 +22,12 @@ const TokenCleaner = () => {
   const [loading, setLoading] = useState(false);
   const [closingAll, setClosingAll] = useState(false);
   const [status, setStatus] = useState("");
-
   const [estimatedSol, setEstimatedSol] = useState(0);
+  const [search, setSearch] = useState("");
 
-  const toSol = (lamports) => lamports / LAMPORTS_PER_SOL;
-
-  // 🔍 SCAN TOKEN ACCOUNTS (NON-ZERO + ZERO)
+  // =========================
+  // 🔍 SCAN TOKEN ACCOUNTS
+  // =========================
   const scanAccounts = useCallback(async () => {
     if (!publicKey) return;
 
@@ -45,8 +46,8 @@ const TokenCleaner = () => {
           const info = a.account.data.parsed.info;
           return {
             pubkey: a.pubkey,
-            mint: info.mint,
-            amount: info.tokenAmount.amount, // raw
+            mint: new PublicKey(info.mint),
+            amount: info.tokenAmount.amount,
             uiAmount: info.tokenAmount.uiAmount || 0,
             decimals: info.tokenAmount.decimals,
             programId,
@@ -56,11 +57,10 @@ const TokenCleaner = () => {
 
       const spl = await scan(TOKEN_PROGRAM_ID);
       const t22 = await scan(TOKEN_2022_PROGRAM_ID);
-
       const all = [...spl, ...t22];
+
       setAccounts(all);
 
-      // estimasi SOL reclaim (hanya akun kosong)
       const rent = await connection.getMinimumBalanceForRentExemption(165);
       const emptyCount = all.filter((a) => a.amount === "0").length;
       setEstimatedSol((rent * emptyCount) / LAMPORTS_PER_SOL);
@@ -68,27 +68,76 @@ const TokenCleaner = () => {
       setStatus(`✅ Found ${all.length} token accounts`);
     } catch (e) {
       console.error(e);
-      setStatus("❌ Failed to scan accounts");
+      setStatus("❌ Scan failed");
     } finally {
       setLoading(false);
     }
   }, [publicKey, connection]);
 
-  // 🔥 BURN TOKEN (CUSTOM AMOUNT)
+  // =========================
+  // 🔥 BURN TOKEN
+  // =========================
   const burnToken = async (acc, uiAmountToBurn) => {
     if (!publicKey || uiAmountToBurn <= 0) return;
+    if (uiAmountToBurn > acc.uiAmount) return;
 
     try {
-      const rawAmount = BigInt(
-        Math.floor(uiAmountToBurn * 10 ** acc.decimals)
+      setStatus("🔥 Burning token...");
+
+      const rawAmount = Math.floor(
+        uiAmountToBurn * Math.pow(10, acc.decimals)
       );
 
+      const tx = new Transaction();
+
+      if (acc.programId.equals(TOKEN_2022_PROGRAM_ID)) {
+        tx.add(
+          createBurnCheckedInstruction(
+            acc.pubkey,
+            acc.mint,
+            publicKey,
+            rawAmount,
+            acc.decimals,
+            [],
+            TOKEN_2022_PROGRAM_ID
+          )
+        );
+      } else {
+        tx.add(
+          createBurnInstruction(
+            acc.pubkey,
+            acc.mint,
+            publicKey,
+            rawAmount
+          )
+        );
+      }
+
+      const sig = await sendTransaction(tx, connection);
+      await connection.confirmTransaction(sig, "confirmed");
+
+      setStatus("🔥 Burn success");
+      scanAccounts();
+    } catch (e) {
+      console.error(e);
+      setStatus("❌ Burn failed");
+    }
+  };
+
+  // =========================
+  // ❌ CLOSE SINGLE ACCOUNT
+  // =========================
+  const closeSingleAccount = async (acc) => {
+    if (!publicKey) return;
+
+    try {
+      setStatus("Closing account...");
+
       const tx = new Transaction().add(
-        createBurnInstruction(
-          acc.pubkey,     // token account
-          acc.mint,       // mint
-          publicKey,      // owner
-          rawAmount,
+        createCloseAccountInstruction(
+          acc.pubkey,
+          publicKey,
+          publicKey,
           [],
           acc.programId
         )
@@ -97,24 +146,26 @@ const TokenCleaner = () => {
       const sig = await sendTransaction(tx, connection);
       await connection.confirmTransaction(sig, "confirmed");
 
-      setStatus(`🔥 Burned ${uiAmountToBurn} tokens`);
+      setStatus("✅ Account closed");
       scanAccounts();
     } catch (e) {
       console.error(e);
-      setStatus("❌ Burn failed");
+      setStatus("❌ Close failed");
     }
   };
 
-  // 🔥 CLOSE ALL EMPTY ACCOUNTS (BATCH)
+  // =========================
+  // 🔥 CLOSE ALL EMPTY
+  // =========================
   const closeAllEmptyAccounts = async () => {
-    const emptyAccounts = accounts.filter((a) => a.amount === "0");
-    if (!emptyAccounts.length) return;
+    const empty = accounts.filter((a) => a.amount === "0");
+    if (!empty.length) return;
 
     try {
       setClosingAll(true);
 
-      for (let i = 0; i < emptyAccounts.length; i += BATCH_SIZE) {
-        const batch = emptyAccounts.slice(i, i + BATCH_SIZE);
+      for (let i = 0; i < empty.length; i += BATCH_SIZE) {
+        const batch = empty.slice(i, i + BATCH_SIZE);
         const tx = new Transaction();
 
         batch.forEach((acc) => {
@@ -133,22 +184,37 @@ const TokenCleaner = () => {
         await connection.confirmTransaction(sig, "confirmed");
 
         setStatus(
-          `🔥 Closed ${Math.min(i + BATCH_SIZE, emptyAccounts.length)} / ${emptyAccounts.length}`
+          `🔥 Closed ${Math.min(i + BATCH_SIZE, empty.length)} / ${empty.length}`
         );
       }
 
       scanAccounts();
     } catch (e) {
       console.error(e);
-      setStatus("❌ Failed closing accounts");
+      setStatus("❌ Close failed");
     } finally {
       setClosingAll(false);
     }
   };
 
+  // =========================
+  // 🔍 SEARCH FILTER
+  // =========================
+ const filteredAccounts = accounts.filter((acc) => {
+  if (!search.trim()) return true;
+
+  const q = search.toLowerCase().trim();
+
+  return (
+    acc.mint.toString().toLowerCase().includes(q) ||
+    acc.pubkey.toString().toLowerCase().includes(q)
+  );
+});
+
+
   if (!publicKey) {
     return (
-      <div className="text-center text-gray-400 py-10">
+      <div className="py-10 text-center text-gray-400">
         🔐 Connect wallet
       </div>
     );
@@ -157,10 +223,47 @@ const TokenCleaner = () => {
   return (
     <div className="space-y-6 text-black">
       {/* HEADER */}
-      <div className="flex justify-between items-center">
+      <div className="flex flex-wrap justify-between items-center gap-3">
         <h2 className="text-xl font-bold">SPL Token Cleaner</h2>
 
-        <div className="flex gap-3">
+        <div className="flex items-center gap-2">
+        <div className="relative w-[280px]">
+  <input
+    type="text"
+    value={search}
+    onChange={(e) => setSearch(e.target.value)}
+    placeholder="Search token / mint / account"
+    className="
+      w-full
+      px-3 pr-8 py-2
+      border border-gray-300 rounded-lg
+      text-sm
+      focus:outline-none focus:ring-2 focus:ring-black
+    "
+  />
+
+  {/* ❌ CLEAR BUTTON */}
+  {search && (
+    <button
+      type="button"
+      onClick={() => setSearch("")}
+      className="
+        absolute right-2 top-1/2 -translate-y-1/2
+        w-5 h-5
+        rounded-full
+        flex items-center justify-center
+        text-gray-500
+        hover:text-black
+        hover:bg-gray-200
+        transition
+      "
+    >
+      ✕
+    </button>
+  )}
+</div>
+
+
           <button
             onClick={scanAccounts}
             disabled={loading}
@@ -179,106 +282,129 @@ const TokenCleaner = () => {
         </div>
       </div>
 
-      {/* ESTIMASI */}
       {estimatedSol > 0 && (
-        <div className="bg-green-50 border border-green-200 px-4 py-3 rounded-lg text-sm">
-          💰 Estimated SOL reclaim:{" "}
-          <strong>{estimatedSol.toFixed(6)} SOL</strong>
+        <div className="bg-green-50 border px-4 py-2 rounded text-sm">
+          💰 Estimated reclaim: <b>{estimatedSol.toFixed(6)} SOL</b>
         </div>
       )}
 
+      {status && <div className="text-sm text-gray-600">{status}</div>}
+
       {/* TABLE */}
-      <div className="overflow-hidden border rounded-2xl bg-white shadow">
-        <table className="w-full text-sm">
+      <div className="border rounded-2xl overflow-hidden bg-white shadow">
+        <table className="w-full text-[13px]">
           <thead className="bg-gray-50 text-gray-600">
             <tr>
               <th className="px-4 py-3 text-left">Token Account</th>
               <th className="px-4 py-3 text-left">Mint</th>
-              <th className="px-4 py-3 text-right">Balance</th>
-              <th className="px-4 py-3 text-center">Burn</th>
+              <th className="px-4 py-3 text-center">Balance</th>
+              <th className="px-4 py-3 text-center">Action</th>
             </tr>
           </thead>
-
           <tbody>
-            {accounts.map((acc) => (
-              <tr
-                key={acc.pubkey.toString()}
-                className="border-t hover:bg-gray-50"
-              >
-                <td className="px-4 py-3 font-mono truncate max-w-[220px]">
+            {filteredAccounts.map((acc) => (
+              <tr key={acc.pubkey.toString()} className="border-t ">
+                <td className="px-4 py-3 font-mono truncate min-w-[180px] ">
                   {acc.pubkey.toString()}
                 </td>
-
-                <td className="px-4 py-3 font-mono truncate max-w-[220px]">
-                  {acc.mint}
+                <td className="px-4 py-3 font-mono truncate min-w-[180px]">
+                  {acc.mint.toString()}
                 </td>
-
-                <td className="px-4 py-3 text-right">
+                <td className="px-4 py-3 text-center min-w-[120px]">
                   {acc.uiAmount}
                 </td>
+                <td className="px-4 py-3">
+                  <div className="flex justify-ends gap-2 w-full">
+                    {acc.uiAmount > 0 && (
+                      <BurnInput acc={acc} onBurn={burnToken} />
+                    )}
 
-                <td className="px-4 py-3 text-center">
-                  {acc.uiAmount > 0 && (
-                    <BurnInput acc={acc} onBurn={burnToken} />
-                  )}
+                    <button
+                      onClick={() => closeSingleAccount(acc)}
+                      disabled={acc.uiAmount > 0}
+                      className="
+                       px-2 py-1
+                        text-[10px] rounded-md
+                        bg-red-600 text-white
+                        disabled:bg-gray-400 
+                      "
+                    >
+                      Close
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
 
-        {!accounts.length && !loading && (
+        {!filteredAccounts.length && !loading && (
           <div className="p-6 text-center text-gray-400">
-            No token accounts found
+            No matching token
           </div>
         )}
       </div>
-
-      <p className="text-xs text-gray-400 text-center">
-        ⚠️ Burn reduces supply. This action is irreversible.
-      </p>
     </div>
   );
 };
 
 export default TokenCleaner;
 
-/* 🔥 BURN INPUT COMPONENT */
+// =================================
+// 🔥 BURN INPUT
+// =================================
 const BurnInput = ({ acc, onBurn }) => {
   const [value, setValue] = useState("");
+  const [selected, setSelected] = useState(null);
+
+  const setPercent = (p) => {
+    const amount =
+      p === 100
+        ? acc.uiAmount
+        : Number(((acc.uiAmount * p) / 100).toFixed(acc.decimals));
+
+    setValue(amount.toString());
+    setSelected(p);
+  };
 
   return (
-    <div className="flex items-center gap-1 justify-center">
-      {/* INPUT */}
+    <div className="flex items-center gap-2 text-[11px]">
       <input
         type="number"
         min="0"
-        step="any"
         max={acc.uiAmount}
-        placeholder="Amount"
         value={value}
-        onChange={(e) => setValue(e.target.value)}
-        className="w-24 px-2 py-2 border rounded text-xs text-right"
+        onChange={(e) => {
+          setValue(e.target.value);
+          setSelected(null);
+        }}
+        className="w-[120px] px-2 py-1 border rounded text-left"
       />
 
-      {/* MAX BUTTON */}
-      <button
-        type="button"
-        onClick={() => setValue(acc.uiAmount)}
-        className="px-2 py-1 rounded bg-orange-500 text-white text-xs hover:bg-orange-600 disabled:bg-orange-300"
-      >
-        100%
-      </button>
+      <div className="flex gap-1">
+        {[25, 50, 75, 100].map((p) => (
+          <button
+            key={p}
+            onClick={() => setPercent(p)}
+            className={`px-2 h-[26px] rounded-full border ${
+              selected === p
+                ? "bg-black text-white"
+                : "bg-white text-black"
+            }`}
+          >
+            {p === 100 ? "MAX" : `${p}%`}
+          </button>
+        ))}
+      </div>
 
-      {/* BURN BUTTON */}
       <button
-        type="button"
         disabled={!value || Number(value) <= 0}
         onClick={() => {
           onBurn(acc, Number(value));
           setValue("");
+          setSelected(null);
         }}
-        className="px-2 py-1 rounded bg-orange-500 text-white text-xs hover:bg-orange-600 disabled:bg-orange-300"
+        className="px-3 h-[28px] rounded-md bg-black text-white disabled:bg-gray-400"
       >
         Burn
       </button>
