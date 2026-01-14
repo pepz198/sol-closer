@@ -7,12 +7,13 @@ import {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   createCloseAccountInstruction,
+  createBurnInstruction,
 } from "@solana/spl-token";
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const BATCH_SIZE = 12;
 
-const TokenCloser = () => {
+const TokenCleaner = () => {
   const { connection } = useConnection();
   const { publicKey, sendTransaction } = useWallet();
 
@@ -22,13 +23,10 @@ const TokenCloser = () => {
   const [status, setStatus] = useState("");
 
   const [estimatedSol, setEstimatedSol] = useState(0);
-  const [balanceBefore, setBalanceBefore] = useState(0);
-  const [balanceAfter, setBalanceAfter] = useState(0);
-  const [showModal, setShowModal] = useState(false);
 
   const toSol = (lamports) => lamports / LAMPORTS_PER_SOL;
 
-  // 🔍 SCAN
+  // 🔍 SCAN TOKEN ACCOUNTS (NON-ZERO + ZERO)
   const scanAccounts = useCallback(async () => {
     if (!publicKey) return;
 
@@ -43,28 +41,31 @@ const TokenCloser = () => {
           "confirmed"
         );
 
-        return res.value
-          .filter(
-            (a) =>
-              a.account.data.parsed?.info?.tokenAmount?.amount === "0"
-          )
-          .map((a) => ({
+        return res.value.map((a) => {
+          const info = a.account.data.parsed.info;
+          return {
             pubkey: a.pubkey,
-            mint: a.account.data.parsed.info.mint,
+            mint: info.mint,
+            amount: info.tokenAmount.amount, // raw
+            uiAmount: info.tokenAmount.uiAmount || 0,
+            decimals: info.tokenAmount.decimals,
             programId,
-          }));
+          };
+        });
       };
 
       const spl = await scan(TOKEN_PROGRAM_ID);
       const t22 = await scan(TOKEN_2022_PROGRAM_ID);
-      const empty = [...spl, ...t22];
 
-      setAccounts(empty);
+      const all = [...spl, ...t22];
+      setAccounts(all);
 
+      // estimasi SOL reclaim (hanya akun kosong)
       const rent = await connection.getMinimumBalanceForRentExemption(165);
-      setEstimatedSol((rent * empty.length) / LAMPORTS_PER_SOL);
+      const emptyCount = all.filter((a) => a.amount === "0").length;
+      setEstimatedSol((rent * emptyCount) / LAMPORTS_PER_SOL);
 
-      setStatus(`✅ Found ${empty.length} empty token accounts`);
+      setStatus(`✅ Found ${all.length} token accounts`);
     } catch (e) {
       console.error(e);
       setStatus("❌ Failed to scan accounts");
@@ -73,17 +74,47 @@ const TokenCloser = () => {
     }
   }, [publicKey, connection]);
 
-  // 🔥 CLOSE ALL (BATCH)
-  const closeAllAccounts = async () => {
-    if (!publicKey || accounts.length === 0) return;
+  // 🔥 BURN TOKEN (CUSTOM AMOUNT)
+  const burnToken = async (acc, uiAmountToBurn) => {
+    if (!publicKey || uiAmountToBurn <= 0) return;
+
+    try {
+      const rawAmount = BigInt(
+        Math.floor(uiAmountToBurn * 10 ** acc.decimals)
+      );
+
+      const tx = new Transaction().add(
+        createBurnInstruction(
+          acc.pubkey,     // token account
+          acc.mint,       // mint
+          publicKey,      // owner
+          rawAmount,
+          [],
+          acc.programId
+        )
+      );
+
+      const sig = await sendTransaction(tx, connection);
+      await connection.confirmTransaction(sig, "confirmed");
+
+      setStatus(`🔥 Burned ${uiAmountToBurn} tokens`);
+      scanAccounts();
+    } catch (e) {
+      console.error(e);
+      setStatus("❌ Burn failed");
+    }
+  };
+
+  // 🔥 CLOSE ALL EMPTY ACCOUNTS (BATCH)
+  const closeAllEmptyAccounts = async () => {
+    const emptyAccounts = accounts.filter((a) => a.amount === "0");
+    if (!emptyAccounts.length) return;
 
     try {
       setClosingAll(true);
-      const before = await connection.getBalance(publicKey);
-      setBalanceBefore(before);
 
-      for (let i = 0; i < accounts.length; i += BATCH_SIZE) {
-        const batch = accounts.slice(i, i + BATCH_SIZE);
+      for (let i = 0; i < emptyAccounts.length; i += BATCH_SIZE) {
+        const batch = emptyAccounts.slice(i, i + BATCH_SIZE);
         const tx = new Transaction();
 
         batch.forEach((acc) => {
@@ -102,19 +133,14 @@ const TokenCloser = () => {
         await connection.confirmTransaction(sig, "confirmed");
 
         setStatus(
-          `🔥 Closed ${Math.min(i + BATCH_SIZE, accounts.length)} / ${accounts.length}`
+          `🔥 Closed ${Math.min(i + BATCH_SIZE, emptyAccounts.length)} / ${emptyAccounts.length}`
         );
       }
 
-      const after = await connection.getBalance(publicKey);
-      setBalanceAfter(after);
-
-      setAccounts([]);
-      setShowModal(true);
-      setStatus("🎉 All empty token accounts closed");
+      scanAccounts();
     } catch (e) {
       console.error(e);
-      setStatus("❌ Failed while closing accounts");
+      setStatus("❌ Failed closing accounts");
     } finally {
       setClosingAll(false);
     }
@@ -123,7 +149,7 @@ const TokenCloser = () => {
   if (!publicKey) {
     return (
       <div className="text-center text-gray-400 py-10">
-        🔐 Connect wallet to scan token accounts
+        🔐 Connect wallet
       </div>
     );
   }
@@ -144,24 +170,17 @@ const TokenCloser = () => {
           </button>
 
           <button
-            onClick={closeAllAccounts}
-            disabled={!accounts.length || closingAll}
+            onClick={closeAllEmptyAccounts}
+            disabled={closingAll}
             className="px-4 py-2 rounded-xl bg-red-600 text-white"
           >
-            {closingAll ? "Closing..." : "Close All"}
+            Close Empty
           </button>
         </div>
       </div>
 
-      {/* STATUS */}
-      {status && (
-        <div className="bg-gray-100 px-4 py-2 rounded-lg text-sm">
-          {status}
-        </div>
-      )}
-
       {/* ESTIMASI */}
-      {accounts.length > 0 && (
+      {estimatedSol > 0 && (
         <div className="bg-green-50 border border-green-200 px-4 py-3 rounded-lg text-sm">
           💰 Estimated SOL reclaim:{" "}
           <strong>{estimatedSol.toFixed(6)} SOL</strong>
@@ -175,7 +194,8 @@ const TokenCloser = () => {
             <tr>
               <th className="px-4 py-3 text-left">Token Account</th>
               <th className="px-4 py-3 text-left">Mint</th>
-              <th className="px-4 py-3 text-center">Program</th>
+              <th className="px-4 py-3 text-right">Balance</th>
+              <th className="px-4 py-3 text-center">Burn</th>
             </tr>
           </thead>
 
@@ -185,16 +205,22 @@ const TokenCloser = () => {
                 key={acc.pubkey.toString()}
                 className="border-t hover:bg-gray-50"
               >
-                <td className="px-4 py-3 font-mono truncate max-w-[260px]">
+                <td className="px-4 py-3 font-mono truncate max-w-[220px]">
                   {acc.pubkey.toString()}
                 </td>
-                <td className="px-4 py-3 font-mono truncate max-w-[260px]">
+
+                <td className="px-4 py-3 font-mono truncate max-w-[220px]">
                   {acc.mint}
                 </td>
+
+                <td className="px-4 py-3 text-right">
+                  {acc.uiAmount}
+                </td>
+
                 <td className="px-4 py-3 text-center">
-                  {acc.programId.equals(TOKEN_2022_PROGRAM_ID)
-                    ? "Token-2022"
-                    : "SPL"}
+                  {acc.uiAmount > 0 && (
+                    <BurnInput acc={acc} onBurn={burnToken} />
+                  )}
                 </td>
               </tr>
             ))}
@@ -203,55 +229,59 @@ const TokenCloser = () => {
 
         {!accounts.length && !loading && (
           <div className="p-6 text-center text-gray-400">
-            No empty token accounts found
+            No token accounts found
           </div>
         )}
       </div>
 
-      {/* MODAL RESULT */}
-      {showModal && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white p-6 rounded-2xl w-full max-w-md">
-            <h3 className="text-lg font-bold text-center">
-              🎉 SOL Reclaimed
-            </h3>
-
-            <div className="mt-4 space-y-3 text-sm">
-              <div className="flex justify-between">
-                <span>Before</span>
-                <span className="font-mono">
-                  {toSol(balanceBefore).toFixed(6)} SOL
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>After</span>
-                <span className="font-mono">
-                  {toSol(balanceAfter).toFixed(6)} SOL
-                </span>
-              </div>
-              <div className="flex justify-between font-semibold text-green-600 border-t pt-2">
-                <span>Gained</span>
-                <span className="font-mono">
-                  +{toSol(balanceAfter - balanceBefore).toFixed(6)} SOL
-                </span>
-              </div>
-            </div>
-
-            <button
-              onClick={() => setShowModal(false)}
-              className="mt-5 w-full py-2 rounded-xl bg-indigo-600 text-white"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
-
       <p className="text-xs text-gray-400 text-center">
-        ⚠️ Accounts are closed in batches (12 / transaction) for safety.
+        ⚠️ Burn reduces supply. This action is irreversible.
       </p>
     </div>
   );
 };
 
-export default TokenCloser;
+export default TokenCleaner;
+
+/* 🔥 BURN INPUT COMPONENT */
+const BurnInput = ({ acc, onBurn }) => {
+  const [value, setValue] = useState("");
+
+  return (
+    <div className="flex items-center gap-1 justify-center">
+      {/* INPUT */}
+      <input
+        type="number"
+        min="0"
+        step="any"
+        max={acc.uiAmount}
+        placeholder="Amount"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        className="w-24 px-2 py-2 border rounded text-xs text-right"
+      />
+
+      {/* MAX BUTTON */}
+      <button
+        type="button"
+        onClick={() => setValue(acc.uiAmount)}
+        className="px-2 py-1 rounded bg-orange-500 text-white text-xs hover:bg-orange-600 disabled:bg-orange-300"
+      >
+        100%
+      </button>
+
+      {/* BURN BUTTON */}
+      <button
+        type="button"
+        disabled={!value || Number(value) <= 0}
+        onClick={() => {
+          onBurn(acc, Number(value));
+          setValue("");
+        }}
+        className="px-2 py-1 rounded bg-orange-500 text-white text-xs hover:bg-orange-600 disabled:bg-orange-300"
+      >
+        Burn
+      </button>
+    </div>
+  );
+};
