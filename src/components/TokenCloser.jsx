@@ -234,7 +234,7 @@ const TokenCleaner = () => {
       }
 
       // 4. Pesan sukses terakhir juga menggunakan signature terakhir
-      showAlert("✅ All empty accounts closed!", "success", lastSignature);
+      showAlert("All empty accounts closed!", "success", lastSignature);
       scanAccounts();
     } catch (e) {
       console.error(e);
@@ -270,7 +270,7 @@ const TokenCleaner = () => {
       
       {/* ALERT TOAST */}
       {alert && (
-        <div className="fixed bottom-5 right-5 z-50 animate-fade-in-up">
+        <div className="fixed bottom-0 left-5 z-50 animate-fade-in-up">
           <div
             className={`
               px-4 py-3 rounded-lg shadow-xl text-sm font-medium
