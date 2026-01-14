@@ -412,7 +412,7 @@ const TokenCleaner = () => {
             disabled={closingAll}
             className="px-4 py-2 h-[40px] rounded-xl bg-red-600 text-white hover:bg-red-700 disabled:bg-red-400 disabled:cursor-not-allowed transition"
           >
-            Close Empty
+            Close All
           </button>
         </div>
       </div>
