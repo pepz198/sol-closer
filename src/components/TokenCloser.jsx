@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react"; // 1. Pastikan useEffect diimpor
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { Transaction, PublicKey } from "@solana/web3.js";
 import {
@@ -31,8 +31,6 @@ const TokenCleaner = () => {
   // ✅ HELPER: Fungsi Alert
   const showAlert = (message, type = "success", signature = null) => {
     setAlert({ message, type, signature });
-    
-    // Auto-close dalam 10 detik jika bukan loading
     if (type !== "loading") {
       setTimeout(() => {
         setAlert(null);
@@ -50,7 +48,7 @@ const TokenCleaner = () => {
   // 🔍 SCAN TOKEN ACCOUNTS
   // =========================
   const scanAccounts = useCallback(async () => {
-    if (!publicKey) return;
+    if (!publicKey) return; // Jika tidak ada wallet, stop
 
     setLoading(true);
     setStatus("🔍 Scanning token accounts...");
@@ -95,6 +93,16 @@ const TokenCleaner = () => {
       setLoading(false);
     }
   }, [publicKey, connection]);
+
+  // ============================================
+  // ✅ NEW: AUTO SCAN SAAT WALLET CONNECT
+  // ============================================
+  useEffect(() => {
+    if (publicKey) {
+      scanAccounts();
+    }
+  }, [publicKey, scanAccounts]); 
+  // Effect ini akan jalan setiap kali 'publicKey' berubah (misal: user baru connect wallet)
 
   // =========================
   // 🔥 BURN TOKEN
@@ -251,66 +259,50 @@ const TokenCleaner = () => {
   return (
     <div className="space-y-6 text-black">
       
-      {/* 
-         ✅ ALERT TOAST (POSISI: BAWAH KANAN) 
-         Perubahan: top-5 -> bottom-5
-      */}
+      {/* ALERT TOAST */}
       {alert && (
-  <div className="fixed bottom-1 left-5 z-50 animate-fade-in-up">
-    <div
-      className={`
-        px-4 py-3 rounded-lg shadow-xl text-sm font-medium
-        flex items-center gap-3
-        transition-all duration-300 transform translate-y-0
-        ${alert.type === "success" && "bg-green-600 text-white"}
-        ${alert.type === "error" && "bg-red-600 text-white"}
-        ${alert.type === "loading" && "bg-black text-white"}
-      `}
-    >
-      {/* ICON + MESSAGE */}
-      <div className="flex items-center gap-2">
-        {alert.type === "loading" && "⏳"}
-        {alert.type === "success" && "✅"}
-        {alert.type === "error" && "❌"}
-        <span>{alert.message}</span>
-      </div>
+        <div className="fixed bottom-5 right-5 z-50 animate-fade-in-up">
+          <div
+            className={`
+              px-4 py-3 rounded-lg shadow-xl text-sm font-medium
+              flex items-center gap-3
+              transition-all duration-300 transform translate-y-0
+              ${alert.type === "success" && "bg-green-600 text-white"}
+              ${alert.type === "error" && "bg-red-600 text-white"}
+              ${alert.type === "loading" && "bg-black text-white"}
+            `}
+          >
+            <div className="flex items-center gap-2">
+              {alert.type === "loading" && "⏳"}
+              {alert.type === "success" && "✅"}
+              {alert.type === "error" && "❌"}
+              <span>{alert.message}</span>
+            </div>
 
-      {/* TX LINK */}
-      {alert.signature && (
-        <a
-          href={getExplorerLink(alert.signature)}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="
-            bg-white/20 hover:bg-white/30
-            px-2 py-1 rounded text-xs font-bold
-            uppercase tracking-wider transition
-          "
-        >
-          View TX ↗
-        </a>
+            {alert.signature && (
+              <a
+                href={getExplorerLink(alert.signature)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="
+                  bg-white/20 hover:bg-white/30
+                  px-2 py-1 rounded text-xs font-bold
+                  uppercase tracking-wider transition
+                "
+              >
+                View TX ↗
+              </a>
+            )}
+
+            <button
+              onClick={() => setAlert(null)}
+              className="ml-1 w-6 h-6 flex items-center justify-center rounded-full text-white/80 hover:text-white hover:bg-white/20 transition"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
       )}
-
-      {/* CLOSE BUTTON */}
-      <button
-        onClick={() => setAlert(null)}
-        className="
-          ml-1
-          w-6 h-6
-          flex items-center justify-center
-          rounded-full
-          text-white/80
-          hover:text-white
-          hover:bg-white/20
-          transition
-        "
-        aria-label="Close alert"
-      >
-        ✕
-      </button>
-    </div>
-  </div>
-)}
 
       {/* HEADER */}
       <div className="flex flex-wrap justify-between items-center gap-3">
@@ -335,16 +327,7 @@ const TokenCleaner = () => {
               <button
                 type="button"
                 onClick={() => setSearch("")}
-                className="
-                  absolute right-2 top-1/2 -translate-y-1/2
-                  w-5 h-5
-                  rounded-full
-                  flex items-center justify-center
-                  text-gray-500
-                  hover:text-black
-                  hover:bg-gray-200
-                  transition
-                "
+                className="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full flex items-center justify-center text-gray-500 hover:text-black hover:bg-gray-200 transition"
               >
                 ✕
               </button>
@@ -409,14 +392,7 @@ const TokenCleaner = () => {
                     <button
                       onClick={() => closeSingleAccount(acc)}
                       disabled={acc.uiAmount > 0}
-                      className="
-                        px-2 py-1 cursor-pointer
-                        text-[10px] rounded-md
-                        bg-red-600 text-white
-                        hover:bg-red-700
-                        disabled:bg-gray-400 
-                        transition
-                      "
+                      className="px-2 py-1 cursor-pointer text-[10px] rounded-md bg-red-600 text-white hover:bg-red-700 disabled:bg-gray-400 transition"
                     >
                       Close
                     </button>
@@ -439,9 +415,7 @@ const TokenCleaner = () => {
 
 export default TokenCleaner;
 
-// =================================
-// 🔥 BURN INPUT (Tidak Berubah)
-// =================================
+// BurnInput component remains the same...
 const BurnInput = ({ acc, onBurn }) => {
   const [value, setValue] = useState("");
   const [selected, setSelected] = useState(null);
