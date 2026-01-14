@@ -191,11 +191,13 @@ const TokenCleaner = () => {
   };
 
   // =========================
-  // 🔥 CLOSE ALL EMPTY
+  // 🔥 CLOSE ALL EMPTY (UPDATED)
   // =========================
   const closeAllEmptyAccounts = async () => {
     const empty = accounts.filter((a) => a.amount === "0");
     if (!empty.length) return;
+
+    let lastSignature = null; // 1. Variabel untuk menyimpan signature terakhir
 
     try {
       setClosingAll(true);
@@ -220,12 +222,19 @@ const TokenCleaner = () => {
         const sig = await sendTransaction(tx, connection);
         await connection.confirmTransaction(sig, "confirmed");
 
-        setStatus(
-          `🔥 Closed ${Math.min(i + BATCH_SIZE, empty.length)} / ${empty.length}`
-        );
+        lastSignature = sig; // 2. Simpan signature
+
+        const closedCount = Math.min(i + BATCH_SIZE, empty.length);
+        
+        // Update status teks
+        setStatus(`🔥 Closed ${closedCount} / ${empty.length}`);
+
+        // 3. Tampilkan alert per batch DENGAN signature (agar muncul link)
+        showAlert(`✅ Batch closed (${closedCount}/${empty.length})`, "success", sig);
       }
 
-      showAlert("✅ All empty accounts closed!", "success");
+      // 4. Pesan sukses terakhir juga menggunakan signature terakhir
+      showAlert("✅ All empty accounts closed!", "success", lastSignature);
       scanAccounts();
     } catch (e) {
       console.error(e);
