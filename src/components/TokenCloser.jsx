@@ -1,5 +1,3 @@
-"use client";
-
 import { useState, useCallback, useEffect } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { Transaction, PublicKey } from "@solana/web3.js";
@@ -10,6 +8,7 @@ import {
   createBurnInstruction,
   createBurnCheckedInstruction,
 } from "@solana/spl-token";
+import { addHistory } from "../lib/txHistory";
 
 const LAMPORTS_PER_SOL = 1_000_000_000;
 const BATCH_SIZE = 12;
@@ -18,20 +17,14 @@ const TokenCleaner = () => {
   const { connection } = useConnection();
   const { publicKey, sendTransaction } = useWallet();
 
-  // Main state
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [closingAll, setClosingAll] = useState(false);
   const [status, setStatus] = useState("");
   const [estimatedSol, setEstimatedSol] = useState(0);
   const [search, setSearch] = useState("");
-
-  // Alerts stack
   const [alerts, setAlerts] = useState([]);
 
-  // =========================
-  // 🔔 ALERT HELPERS
-  // =========================
   const removeAlert = (id) => {
     setAlerts((prev) => prev.filter((a) => a.id !== id));
   };
@@ -39,16 +32,13 @@ const TokenCleaner = () => {
   const showAlert = (message, type = "success", signature = null) => {
     const id = Date.now() + Math.random();
     const newAlert = { id, message, type, signature };
-
     setAlerts((prev) => [...prev, newAlert]);
-
     if (type !== "loading") {
       setTimeout(() => removeAlert(id), 5000);
     }
     return id;
   };
 
-  // Always: remove loading toast first, then show next toast (avoid “double toast” feel)
   const replaceLoadingWith = (loadingId, next) => {
     if (loadingId) removeAlert(loadingId);
     setTimeout(() => {
@@ -75,9 +65,11 @@ const TokenCleaner = () => {
     );
   };
 
-  // =========================
-  // 🔍 SCAN TOKEN ACCOUNTS
-  // =========================
+  const saveToHistory = (entry) => {
+    if (!publicKey) return;
+    addHistory(publicKey.toString(), entry);
+  };
+
   const scanAccounts = useCallback(async () => {
     if (!publicKey) return;
 
@@ -97,7 +89,7 @@ const TokenCleaner = () => {
           return {
             pubkey: a.pubkey,
             mint: new PublicKey(info.mint),
-            amount: info.tokenAmount.amount, // string
+            amount: info.tokenAmount.amount,
             uiAmount: info.tokenAmount.uiAmount || 0,
             decimals: info.tokenAmount.decimals,
             programId,
@@ -129,9 +121,6 @@ const TokenCleaner = () => {
     if (publicKey) scanAccounts();
   }, [publicKey, scanAccounts]);
 
-  // =========================
-  // 🔥 BURN TOKEN
-  // =========================
   const burnToken = async (acc, uiAmountToBurn) => {
     if (!publicKey || uiAmountToBurn <= 0) return;
     if (uiAmountToBurn > acc.uiAmount) return;
@@ -170,6 +159,14 @@ const TokenCleaner = () => {
         signature: sig,
       });
 
+      saveToHistory({
+        type: "burn",
+        status: "success",
+        mint: acc.mint.toString(),
+        amount: uiAmountToBurn,
+        signature: sig,
+      });
+
       setStatus("✅ Burn success");
       scanAccounts();
     } catch (e) {
@@ -177,18 +174,29 @@ const TokenCleaner = () => {
 
       if (isUserReject(e)) {
         setStatus("⚠️ Transaction cancelled");
-        replaceLoadingWith(loadingId, { type: "error", message: "Transaction cancelled" });
+        replaceLoadingWith(loadingId, { type: "warning", message: "Transaction cancelled" });
+        
+        saveToHistory({
+          type: "burn",
+          status: "cancelled",
+          mint: acc.mint.toString(),
+          amount: uiAmountToBurn,
+        });
         return;
       }
 
       setStatus("❌ Burn failed");
       replaceLoadingWith(loadingId, { type: "error", message: "Burn failed!" });
+      
+      saveToHistory({
+        type: "burn",
+        status: "error",
+        mint: acc.mint.toString(),
+        amount: uiAmountToBurn,
+      });
     }
   };
 
-  // =========================
-  // ❌ CLOSE SINGLE ACCOUNT
-  // =========================
   const closeSingleAccount = async (acc) => {
     if (!publicKey) return;
 
@@ -217,6 +225,13 @@ const TokenCleaner = () => {
         signature: sig,
       });
 
+      saveToHistory({
+        type: "close",
+        status: "success",
+        mint: acc.mint.toString(),
+        signature: sig,
+      });
+
       setStatus("✅ Account closed");
       scanAccounts();
     } catch (e) {
@@ -224,18 +239,28 @@ const TokenCleaner = () => {
 
       if (isUserReject(e)) {
         setStatus("⚠️ Transaction cancelled");
-        replaceLoadingWith(loadingId, { type: "error", message: "Transaction cancelled" });
+        replaceLoadingWith(loadingId, { type: "warning", message: "Transaction cancelled" });
+        
+        saveToHistory({
+          type: "close",
+          status: "cancelled",
+          mint: acc.mint.toString(),
+        });
+        
         return;
       }
 
       setStatus("❌ Close failed");
       replaceLoadingWith(loadingId, { type: "error", message: "Failed to close account" });
+      
+      saveToHistory({
+        type: "close",
+        status: "error",
+        mint: acc.mint.toString(),
+      });
     }
   };
 
-  // =========================
-  // 🔥 CLOSE ALL EMPTY (BATCH)
-  // =========================
   const closeAllEmptyAccounts = async () => {
     const empty = accounts.filter((a) => a.amount === "0");
     if (!empty.length) return;
@@ -270,7 +295,6 @@ const TokenCleaner = () => {
         const closedCount = Math.min(i + BATCH_SIZE, empty.length);
         setStatus(`🔥 Closed ${closedCount} / ${empty.length}`);
 
-        // per-batch toast (stacking)
         showAlert(`Batch closed (${closedCount}/${empty.length})`, "success", sig);
       }
 
@@ -280,26 +304,43 @@ const TokenCleaner = () => {
         signature: lastSignature,
       });
 
+      saveToHistory({
+        type: "close",
+        status: "success",
+        count: empty.length,
+        signature: lastSignature,
+      });
+
       scanAccounts();
     } catch (e) {
       console.error(e);
 
       if (isUserReject(e)) {
         setStatus("⚠️ Transaction cancelled");
-        replaceLoadingWith(loadingId, { type: "error", message: "Transaction cancelled" });
+        replaceLoadingWith(loadingId, { type: "warning", message: "Transaction cancelled" });
+        
+        saveToHistory({
+          type: "close",
+          status: "cancelled",
+          count: empty.length,
+        });
+        
         return;
       }
 
       setStatus("❌ Close failed");
       replaceLoadingWith(loadingId, { type: "error", message: "Failed to close all accounts" });
+      
+      saveToHistory({
+        type: "close",
+        status: "error",
+        count: empty.length,
+      });
     } finally {
       setClosingAll(false);
     }
   };
 
-  // =========================
-  // 🔍 FILTER
-  // =========================
   const filteredAccounts = accounts.filter((acc) => {
     if (!search.trim()) return true;
     const q = search.toLowerCase().trim();
@@ -315,14 +356,12 @@ const TokenCleaner = () => {
 
   return (
     <div className="space-y-6 text-black relative">
-      {/* ALERTS (STACKING) */}
       <div className="fixed bottom-0 right-5 z-50 flex flex-col gap-2 pointer-events-none pb-5">
         {alerts.map((alert) => (
           <div
             key={alert.id}
             className={`
-              pointer-events-auto
-              px-4 py-3 rounded-lg shadow-xl text-sm font-medium
+              pointer-events-auto px-4 py-3 rounded-lg shadow-xl text-sm font-medium
               flex items-center justify-between gap-4 min-w-[300px]
               animate-fade-in-up transition-all duration-300
               ${alert.type === "success" && "bg-green-600 text-white"}
@@ -332,10 +371,6 @@ const TokenCleaner = () => {
             `}
           >
             <div className="flex items-center gap-2">
-              {alert.type === "loading" }
-              {alert.type === "success" }
-              {alert.type === "error" }
-               {alert.type === "warning"}
               <span>{alert.message}</span>
             </div>
 
@@ -361,12 +396,10 @@ const TokenCleaner = () => {
         ))}
       </div>
 
-      {/* HEADER */}
       <div className="flex flex-wrap justify-between items-center gap-3">
         <h2 className="text-xl font-bold">SPL Token Cleaner</h2>
 
         <div className="flex items-center gap-2">
-          {/* Search */}
           <div className="relative w-[280px]">
             <input
               type="text"
@@ -386,7 +419,6 @@ const TokenCleaner = () => {
             )}
           </div>
 
-          {/* Scan */}
           <button
             onClick={scanAccounts}
             disabled={loading}
@@ -406,7 +438,6 @@ const TokenCleaner = () => {
             )}
           </button>
 
-          {/* Close Empty */}
           <button
             onClick={closeAllEmptyAccounts}
             disabled={closingAll}
@@ -425,7 +456,6 @@ const TokenCleaner = () => {
 
       {status && <div className="text-sm text-gray-600">{status}</div>}
 
-      {/* TABLE */}
       <div className="border border-gray-200 rounded-2xl overflow-hidden bg-white shadow-sm ring-1 ring-black/5">
         <table className="min-w-full table-fixed divide-y divide-gray-200">
           <thead className="bg-gray-50">
@@ -442,9 +472,8 @@ const TokenCleaner = () => {
             </tr>
           </thead>
 
-                   <tbody className="divide-y divide-gray-100 bg-white">
+          <tbody className="divide-y divide-gray-100 bg-white">
             {loading ? (
-              // 🔄 SINGLE CENTERED SPINNER
               <tr>
                 <td colSpan="3" className="px-6 py-16">
                   <div className="flex flex-col items-center justify-center gap-3">
@@ -473,12 +502,11 @@ const TokenCleaner = () => {
                 </td>
               </tr>
             ) : (
-
               filteredAccounts.map((acc) => (
                 <tr key={acc.pubkey.toString()} className="group transition-colors duration-200 hover:bg-gray-50">
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center gap-1">
-                      <span className="font-mono text-sm text-gray-700 font-medium truncate " title={acc.mint.toString()}>
+                      <span className="font-mono text-sm text-gray-700 font-medium truncate" title={acc.mint.toString()}>
                         {acc.mint.toString()}
                       </span>
                       <CopyButton text={acc.mint.toString()} />
@@ -538,9 +566,6 @@ const TokenCleaner = () => {
 
 export default TokenCleaner;
 
-// =========================
-// 🔥 BurnInput
-// =========================
 const BurnInput = ({ acc, onBurn }) => {
   const [value, setValue] = useState("");
   const [selected, setSelected] = useState(null);
@@ -598,9 +623,6 @@ const BurnInput = ({ acc, onBurn }) => {
   );
 };
 
-// =========================
-// 📋 CopyButton
-// =========================
 const CopyButton = ({ text }) => {
   const [copied, setCopied] = useState(false);
 

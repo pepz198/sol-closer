@@ -1,5 +1,5 @@
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
-import Twitter from "../assets/icons/twitter.svg"
+import Twitter from "../assets/icons/twitter.svg";
 
 const Navbar = () => {
   return (
@@ -17,7 +17,7 @@ const Navbar = () => {
           href="https://x.com/pepz198"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 hover:bg-indigo-700 rounded bg-indigo-600 p-2 text-gray-800 font-semibold shadow hover:bg-gray-100 transition"
+          className="flex items-center gap-2 hover:bg-indigo-700 rounded-lg bg-indigo-600 p-2 text-white font-semibold shadow transition"
         >
           <img
             src={Twitter}
