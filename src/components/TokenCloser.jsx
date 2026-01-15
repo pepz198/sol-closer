@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react"; // 1. Tambah useRef
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { Transaction, PublicKey } from "@solana/web3.js";
 import {
@@ -17,6 +17,9 @@ const TokenCleaner = () => {
   const { connection } = useConnection();
   const { publicKey, sendTransaction } = useWallet();
 
+  // 2. Buat Ref untuk input search
+  const searchInputRef = useRef(null);
+
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [closingAll, setClosingAll] = useState(false);
@@ -25,10 +28,30 @@ const TokenCleaner = () => {
   const [search, setSearch] = useState("");
   const [alerts, setAlerts] = useState([]);
 
+  // --- LOGIC HOTKEY CTRL + K ---
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      // Deteksi Ctrl+K atau Cmd+K
+      if ((event.ctrlKey || event.metaKey) && event.key === "k") {
+        event.preventDefault(); // Mencegah behavior browser default
+        searchInputRef.current?.focus(); // Fokus ke input
+      }
+      // Deteksi ESC untuk blur (opsional tapi bagus untuk UX)
+      if (event.key === "Escape") {
+         searchInputRef.current?.blur();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+  // -----------------------------
+
   const removeAlert = (id) => {
     setAlerts((prev) => prev.filter((a) => a.id !== id));
   };
-
+  
+  // ... (Sisa fungsi helper: showAlert, replaceLoadingWith, getExplorerLink, dll TETAP SAMA) ...
   const showAlert = (message, type = "success", signature = null) => {
     const id = Date.now() + Math.random();
     const newAlert = { id, message, type, signature };
@@ -58,7 +81,6 @@ const TokenCleaner = () => {
       code === 4001 ||
       msg.includes("user rejected") ||
       msg.includes("user denied") ||
-      msg.includes("user canceled") ||
       msg.includes("user cancelled") ||
       msg.includes("rejected the request") ||
       msg.includes("0x0")
@@ -122,6 +144,7 @@ const TokenCleaner = () => {
   }, [publicKey, scanAccounts]);
 
   const burnToken = async (acc, uiAmountToBurn) => {
+      // ... (Fungsi burnToken TETAP SAMA) ...
     if (!publicKey || uiAmountToBurn <= 0) return;
     if (uiAmountToBurn > acc.uiAmount) return;
 
@@ -198,6 +221,7 @@ const TokenCleaner = () => {
   };
 
   const closeSingleAccount = async (acc) => {
+       // ... (Fungsi closeSingleAccount TETAP SAMA) ...
     if (!publicKey) return;
 
     let loadingId = null;
@@ -262,6 +286,7 @@ const TokenCleaner = () => {
   };
 
   const closeAllEmptyAccounts = async () => {
+    // ... (Fungsi closeAllEmptyAccounts TETAP SAMA) ...
     const empty = accounts.filter((a) => a.amount === "0");
     if (!empty.length) return;
 
@@ -351,11 +376,24 @@ const TokenCleaner = () => {
   });
 
   if (!publicKey) {
-    return <div className="py-10 text-center text-gray-400">🔐 Connect wallet to start</div>;
+    return (
+      <div className="flex items-center justify-center min-h-[50vh]">
+        <div className="text-center">
+          <div className="text-6xl mb-4">🔐</div>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">
+            Wallet Not Connected
+          </h2>
+          <p className="text-gray-500">
+            Please connect your wallet to view transaction history
+          </p>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="space-y-6 text-black relative">
+       {/* ... (Bagian Alert TETAP SAMA) ... */}
       <div className="fixed bottom-0 right-5 z-50 flex flex-col gap-2 pointer-events-none pb-5">
         {alerts.map((alert) => (
           <div
@@ -396,40 +434,56 @@ const TokenCleaner = () => {
         ))}
       </div>
 
-      <div className="flex flex-wrap justify-between items-center gap-3">
+      <div className="flex flex-wrap justify-between items-center gap-4">
         <h2 className="text-xl font-bold">SPL Token Cleaner</h2>
 
         <div className="flex items-center gap-2">
+          {/* ========== UPDATE DI SINI: INPUT SEARCH ========== */}
           <div className="relative w-[280px]">
             <input
+              ref={searchInputRef} // 3. Pasang Ref
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search token / mint..."
-              className="w-full px-3 pr-8 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-black"
+              className="w-full px-3 pr-20 py-2 border border-gray-300 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-black"
             />
+            
+            {/* 4. Tampilkan Badge Ctrl+K jika search kosong */}
+            {!search && (
+              <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
+                <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-sans font-medium text-gray-400 bg-gray-100 border border-gray-200 rounded">
+                  Ctrl K
+                </kbd>
+              </div>
+            )}
+
             {search && (
               <button
                 type="button"
-                onClick={() => setSearch("")}
+                onClick={() => {
+                   setSearch("");
+                   searchInputRef.current?.focus(); // Balikin fokus setelah clear
+                }}
                 className="absolute right-2 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full flex items-center justify-center text-gray-500 hover:text-black hover:bg-gray-200 transition"
               >
                 ✕
               </button>
             )}
           </div>
+          {/* ================================================== */}
 
           <button
             onClick={scanAccounts}
             disabled={loading}
             className={`
-              min-w-[100px] px-4 py-2 h-[40px] rounded-xl text-white font-medium
-              flex items-center justify-center gap-2 transition-all
+              min-w-[100px] px-4 py-2 rounded-xl text-white font-medium text-xs
+              flex items-center justify-center gap-2 transition-all text-sm
               ${loading ? "bg-indigo-400 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700 shadow-lg hover:shadow-xl"}
             `}
           >
             {loading ? (
-              <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
@@ -441,7 +495,7 @@ const TokenCleaner = () => {
           <button
             onClick={closeAllEmptyAccounts}
             disabled={closingAll}
-            className="px-4 py-2 h-[40px] rounded-xl bg-red-600 text-white hover:bg-red-700 disabled:bg-red-400 disabled:cursor-not-allowed transition"
+            className="px-4 py-2 rounded-xl text-xs bg-red-600 text-white hover:bg-red-700 disabled:bg-red-400 disabled:cursor-not-allowed transition"
           >
             Close All
           </button>
@@ -552,6 +606,7 @@ const TokenCleaner = () => {
           </tbody>
         </table>
 
+        {/* ... (Pesan No Tokens Found TETAP SAMA) ... */}
         {!filteredAccounts.length && !loading && (
           <div className="px-6 py-12 text-center">
             <div className="mx-auto h-12 w-12 text-gray-300 mb-3 text-4xl">🍃</div>
@@ -566,6 +621,7 @@ const TokenCleaner = () => {
 
 export default TokenCleaner;
 
+// ... (Komponen BurnInput dan CopyButton di bawah tetap SAMA seperti kode awal Anda) ...
 const BurnInput = ({ acc, onBurn }) => {
   const [value, setValue] = useState("");
   const [selected, setSelected] = useState(null);
