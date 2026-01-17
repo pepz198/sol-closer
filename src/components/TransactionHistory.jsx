@@ -64,7 +64,7 @@ export default function TransactionHistory() {
             disabled={!items.length}
             // Ubah onClick untuk membuka modal kustom
             onClick={() => setShowClearModal(true)}
-            className="px-4 py-2 rounded-xl text-xs   text-red-600 hover:bg-red-50 hover:border-red-300 border disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
+            className="px-4 py-2 rounded-xl text-xs font-semibold text-red-600 hover:bg-red-50 hover:border-red-300 border disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer"
             // className="px-4 py-2 rounded-xl text-xs bg-red-600 text-white hover:bg-red-700 disabled:bg-red-400 disabled:cursor-not-allowed transition"          
           >
             Clear History
@@ -78,7 +78,7 @@ export default function TransactionHistory() {
             <button
               key={type}
               onClick={() => setFilter(type)}
-              className={`px-5 py-2.5 rounded-xl text-sm font-semibold transition-all whitespace-nowrap capitalize ${
+              className={`px-5 py-2.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap capitalize ${
                 filter === type
                   ? "bg-indigo-600 text-white shadow-md"
                   : "text-gray-600 hover:bg-gray-100 hover:text-gray-800"

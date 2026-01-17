@@ -477,7 +477,7 @@ const TokenCleaner = () => {
             onClick={scanAccounts}
             disabled={loading}
             className={`
-              min-w-[100px] px-4 py-2 rounded-xl text-white font-medium text-xs
+              min-w-[70px] px-4 py-2 rounded-xl text-white font-medium text-xs
               flex items-center justify-center gap-2 transition-all text-sm
               ${loading ? "bg-indigo-400 cursor-not-allowed" : "bg-indigo-600 hover:bg-indigo-700 shadow-lg hover:shadow-xl"}
             `}
