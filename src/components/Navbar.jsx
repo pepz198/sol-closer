@@ -1,15 +1,22 @@
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import Twitter from "../assets/icons/twitter.svg";
+import closerLogo from "../assets/icons/CLOSER.png";
 
 const Navbar = () => {
   return (
     <nav className="flex items-center justify-between rounded-3xl bg-yellow-300 px-8 py-5 shadow-md">
       {/* Left: Brand */}
-      <div className="flex items-center gap-3">
+     <div className="flex items-center gap-3">
+        <img
+          src={closerLogo}
+          alt="Sol Closer Logo"
+          className="w-8 h-8"
+        />
         <span className="text-2xl font-extrabold text-gray-800">
           Sol Closer
         </span>
       </div>
+
 
       {/* Right: Twitter + Wallet */}
       <div className="flex items-center gap-3">
